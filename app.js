@@ -10,7 +10,8 @@ const LEGACY_STORAGE_KEYS = [
 ];
 const TOTAL_MATCH_TOLERANCE_CENTS = 1;
 const SUPABASE_URL = "https://wwqylztfvgjauiwxieii.supabase.co";
-const SUPABASE_ANON_KEY = "";
+const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind3cXlsenRmdmdqYXVpd3hpZWlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODg5NzMsImV4cCI6MjA5NDg2NDk3M30.WhqanwDQUlOihRIGK4ZPp06vHD2mJTCrVbqiZuKkSo8";
 const CLOUD_TABLE = "finance_states";
 
 const currency = new Intl.NumberFormat("pt-BR", {
