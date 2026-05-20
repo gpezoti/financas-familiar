@@ -9,6 +9,9 @@ const LEGACY_STORAGE_KEYS = [
   "gui-eve-finance-empty-v7",
 ];
 const TOTAL_MATCH_TOLERANCE_CENTS = 1;
+const SUPABASE_URL = "https://wwqylztfvgjauiwxieii.supabase.co";
+const SUPABASE_ANON_KEY = "";
+const CLOUD_TABLE = "finance_states";
 
 const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -159,9 +162,13 @@ const seedSummaries = {
 let currentMonth = "2026-05";
 let currentCard = "Azul";
 let state = loadState();
+let supabaseClient = null;
+let currentUser = null;
+let cloudSaveTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   wireEvents();
+  initializeCloudSync();
   render();
 });
 
@@ -253,6 +260,7 @@ function defaultBillsForMonth(monthKey) {
 function saveState() {
   state.updatedAt = new Date().toISOString();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  scheduleCloudSave();
 }
 
 function wireEvents() {
@@ -289,10 +297,16 @@ function wireEvents() {
     render();
   });
 
-  document.getElementById("saveSnapshotBtn").addEventListener("click", () => {
+  document.getElementById("saveSnapshotBtn").addEventListener("click", async () => {
     saveState();
-    setFeedback("Tudo salvo neste navegador.");
+    if (currentUser) await saveCloudState();
+    setFeedback(currentUser ? "Tudo salvo neste navegador e na nuvem." : "Tudo salvo neste navegador.");
   });
+
+  document.getElementById("sendLoginBtn").addEventListener("click", sendLoginLink);
+  document.getElementById("loadCloudBtn").addEventListener("click", loadCloudState);
+  document.getElementById("saveCloudBtn").addEventListener("click", saveCloudState);
+  document.getElementById("signOutBtn").addEventListener("click", signOutCloud);
 
   document.getElementById("resetBtn").addEventListener("click", () => {
     if (!confirm("Restaurar a base inicial e apagar alterações locais?")) return;
@@ -316,6 +330,153 @@ function wireEvents() {
       renderTransactions();
     });
   });
+}
+
+async function initializeCloudSync() {
+  const client = getSupabaseClient();
+  updateSyncButtons();
+
+  if (!client) {
+    setSyncStatus("Supabase ainda sem chave publica. Cole a anon public key em app.js para ativar celular.");
+    return;
+  }
+
+  const { data } = await client.auth.getSession();
+  currentUser = data.session?.user ?? null;
+  updateSyncButtons();
+  setSyncStatus(currentUser ? `Logado como ${currentUser.email}.` : "Digite seu e-mail para receber o link de acesso.");
+
+  client.auth.onAuthStateChange((_event, session) => {
+    currentUser = session?.user ?? null;
+    updateSyncButtons();
+    setSyncStatus(currentUser ? `Logado como ${currentUser.email}.` : "Sessao encerrada.");
+  });
+}
+
+function getSupabaseClient() {
+  if (typeof window === "undefined" || !SUPABASE_URL || !SUPABASE_ANON_KEY || !window.supabase?.createClient) return null;
+  if (!supabaseClient) {
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return supabaseClient;
+}
+
+async function sendLoginLink() {
+  const client = getSupabaseClient();
+  if (!client) {
+    setSyncStatus("Supabase nao configurado. Falta colar a anon public key em app.js.");
+    return;
+  }
+
+  const email = document.getElementById("syncEmail").value.trim();
+  if (!email) {
+    setSyncStatus("Digite seu e-mail para enviar o link de acesso.");
+    return;
+  }
+
+  const { error } = await client.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: window.location.href.split("#")[0] },
+  });
+  setSyncStatus(error ? `Erro ao enviar link: ${error.message}` : "Link enviado. Abra o e-mail neste aparelho.");
+}
+
+async function loadCloudState() {
+  const client = getSupabaseClient();
+  const user = await requireCloudUser(client);
+  if (!user) return;
+
+  const { data, error } = await client.from(CLOUD_TABLE).select("state, updated_at").eq("user_id", user.id).maybeSingle();
+  if (error) {
+    setSyncStatus(`Erro ao carregar nuvem: ${error.message}`);
+    return;
+  }
+
+  if (!data?.state) {
+    setSyncStatus("Nao ha dados salvos na nuvem para este usuario.");
+    return;
+  }
+
+  state = migrateState(data.state);
+  saveState();
+  render();
+  setSyncStatus(`Dados carregados da nuvem. Ultima atualizacao: ${formatSyncDate(data.updated_at)}.`);
+}
+
+async function saveCloudState() {
+  const client = getSupabaseClient();
+  const user = await requireCloudUser(client);
+  if (!user) return;
+
+  const payload = {
+    user_id: user.id,
+    state,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await client.from(CLOUD_TABLE).upsert(payload, { onConflict: "user_id" });
+  setSyncStatus(error ? `Erro ao salvar nuvem: ${error.message}` : "Dados salvos na nuvem.");
+}
+
+async function signOutCloud() {
+  const client = getSupabaseClient();
+  if (!client) return;
+  await client.auth.signOut();
+  currentUser = null;
+  updateSyncButtons();
+  setSyncStatus("Sessao encerrada neste aparelho.");
+}
+
+async function requireCloudUser(client) {
+  if (!client) {
+    setSyncStatus("Supabase nao configurado. Falta colar a anon public key em app.js.");
+    return null;
+  }
+
+  const { data, error } = await client.auth.getUser();
+  if (error || !data.user) {
+    setSyncStatus("Entre pelo link de e-mail antes de usar a nuvem.");
+    return null;
+  }
+
+  currentUser = data.user;
+  updateSyncButtons();
+  return data.user;
+}
+
+function scheduleCloudSave() {
+  if (!currentUser || !getSupabaseClient()) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(() => {
+    saveCloudState();
+  }, 900);
+}
+
+function updateSyncButtons() {
+  const configured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase?.createClient);
+  const logged = Boolean(currentUser);
+  const loginButton = document.getElementById("sendLoginBtn");
+  const loadButton = document.getElementById("loadCloudBtn");
+  const saveButton = document.getElementById("saveCloudBtn");
+  const signOutButton = document.getElementById("signOutBtn");
+  if (!loginButton) return;
+
+  loginButton.disabled = !configured || logged;
+  loadButton.disabled = !configured || !logged;
+  saveButton.disabled = !configured || !logged;
+  signOutButton.disabled = !configured || !logged;
+}
+
+function setSyncStatus(message) {
+  const element = document.getElementById("syncStatus");
+  if (element) element.textContent = message;
+}
+
+function formatSyncDate(value) {
+  if (!value) return "sem data";
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
 function render() {

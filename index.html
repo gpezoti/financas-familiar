@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Controle financeiro Gui & Eve</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260520-supabase" />
   </head>
   <body>
     <header class="app-header">
@@ -66,6 +66,21 @@
         </p>
       </section>
 
+      <section class="sync-panel">
+        <div>
+          <p class="eyebrow">Sincronização</p>
+          <h2>Salvar na nuvem</h2>
+          <p id="syncStatus" class="feedback">Configure a chave publica do Supabase para acessar no celular.</p>
+        </div>
+        <div class="sync-actions">
+          <input id="syncEmail" type="email" placeholder="seu e-mail" aria-label="E-mail para login" />
+          <button id="sendLoginBtn" class="secondary">Enviar link</button>
+          <button id="loadCloudBtn" class="secondary">Carregar nuvem</button>
+          <button id="saveCloudBtn">Salvar nuvem</button>
+          <button id="signOutBtn" class="ghost">Sair</button>
+        </div>
+      </section>
+
       <nav class="tabs" aria-label="Visões">
         <button class="tab active" data-view="cardsView">Faturas</button>
         <button class="tab" data-view="billsView">Contas</button>
@@ -111,6 +126,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script src="./app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="./app.js?v=20260520-supabase"></script>
   </body>
 </html>
