@@ -58,6 +58,11 @@ const fixedMayBills = [
   bill("", "Gastos aleatórios", 188, true),
 ];
 
+const defaultMonthlyIncomes = [
+  incomeEntry("Solvace", 12078.69, true),
+  incomeEntry("Ioasys", 12000, true),
+];
+
 const visibleMayCardItems = [
   tx("Azul", "PAULO SERGIO V 04/08", 674.5, "gui"),
   tx("Porto", "PBKIDS BRINQUEDOS 04/06", 55.84, "gui"),
@@ -184,6 +189,16 @@ function bill(day, description, amount, paid = false, source = "manual") {
   };
 }
 
+function incomeEntry(description, amount, received = false, day = "") {
+  return {
+    id: crypto.randomUUID(),
+    day,
+    description,
+    amount,
+    received,
+  };
+}
+
 function tx(card, description, amount, owner = "manual", source = "seed", date = "") {
   return {
     id: crypto.randomUUID(),
@@ -216,6 +231,7 @@ function loadState() {
         label,
         income: 0,
         balance: null,
+        incomes: defaultIncomesForMonth(key),
         bills: defaultBillsForMonth(key),
         transactions: [],
         statementTotals: { Azul: null, Porto: null },
@@ -237,6 +253,9 @@ function migrateState(nextState) {
   monthLabels.forEach(([key]) => {
     const month = ensureMonth(key, nextState);
     month.statementTotals = month.statementTotals ?? { Azul: null, Porto: null };
+    if (!Array.isArray(month.incomes)) {
+      month.incomes = month.income ? [incomeEntry("Entrada", Number(month.income) || 0, true)] : defaultIncomesForMonth(key);
+    }
     if (!Array.isArray(month.bills) || !month.bills.length) {
       month.bills = defaultBillsForMonth(key);
     }
@@ -255,6 +274,14 @@ function defaultBillsForMonth(monthKey) {
   return (monthKey === "2026-05" ? fixedMayBills : projectedBillsFor(monthKey)).map((item) => ({
     ...item,
     id: crypto.randomUUID(),
+  }));
+}
+
+function defaultIncomesForMonth(monthKey) {
+  return defaultMonthlyIncomes.map((item) => ({
+    ...item,
+    id: crypto.randomUUID(),
+    received: monthKey === "2026-05",
   }));
 }
 
@@ -288,6 +315,12 @@ function wireEvents() {
 
   document.getElementById("addBillBtn").addEventListener("click", () => {
     ensureMonth(currentMonth).bills.unshift(bill("", "Nova conta", 0, false));
+    saveState();
+    render();
+  });
+
+  document.getElementById("addIncomeBtn").addEventListener("click", () => {
+    ensureMonth(currentMonth).incomes.unshift(incomeEntry("Nova entrada", 0, false));
     saveState();
     render();
   });
@@ -485,6 +518,7 @@ function render() {
   renderSummary();
   renderBreakdown();
   renderTransactions();
+  renderIncomes();
   renderBills();
   renderProjection();
 }
@@ -608,20 +642,11 @@ function renderBills() {
   const bills = month.bills;
   if (!bills.length) {
     root.innerHTML = emptyState();
+    renderAccountsSummary();
     return;
   }
 
-  root.innerHTML =
-    bills.map((item) => renderBillRow(item, currentMonth)).join("") +
-    `
-      <article class="bill-row bill-total">
-        <span></span>
-        <strong>Total de contas</strong>
-        <strong>${currency.format(calculateBillsTotal(currentMonth))}</strong>
-        <span></span>
-        <span></span>
-      </article>
-    `;
+  root.innerHTML = bills.map((item) => renderBillRow(item, currentMonth)).join("");
   root.querySelectorAll("[data-bill-field]").forEach((input) => {
     input.addEventListener("input", updateBillFromInput);
   });
@@ -631,11 +656,14 @@ function renderBills() {
       item.paid = input.checked;
       saveState();
       renderSummary();
+      renderAccountsSummary();
+      renderProjection();
     });
   });
   root.querySelectorAll("[data-remove-bill]").forEach((button) => {
     button.addEventListener("click", () => removeBill(button.dataset.removeBill));
   });
+  renderAccountsSummary();
 }
 
 function renderBillRow(item, monthKey) {
@@ -655,6 +683,75 @@ function renderBillRow(item, monthKey) {
   `;
 }
 
+function renderIncomes() {
+  const root = document.getElementById("incomeList");
+  const incomes = ensureMonth(currentMonth).incomes ?? [];
+  if (!incomes.length) {
+    root.innerHTML = emptyState();
+    return;
+  }
+
+  root.innerHTML = incomes.map(renderIncomeRow).join("");
+  root.querySelectorAll("[data-income-field]").forEach((input) => {
+    input.addEventListener("input", updateIncomeFromInput);
+  });
+  root.querySelectorAll("[data-income-received]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const item = findIncome(input.dataset.incomeReceived);
+      item.received = input.checked;
+      saveState();
+      renderAccountsSummary();
+      renderProjection();
+    });
+  });
+  root.querySelectorAll("[data-remove-income]").forEach((button) => {
+    button.addEventListener("click", () => removeIncome(button.dataset.removeIncome));
+  });
+}
+
+function renderIncomeRow(item) {
+  return `
+    <article class="income-row">
+      <input type="text" value="${escapeAttr(item.day ?? "")}" data-income-field="day" data-id="${item.id}" aria-label="Dia da entrada" />
+      <input type="text" value="${escapeAttr(item.description)}" data-income-field="description" data-id="${item.id}" />
+      <input type="number" min="0" step="0.01" value="${Number(item.amount).toFixed(2)}" data-income-field="amount" data-id="${item.id}" />
+      <label class="check-cell">
+        <input type="checkbox" ${item.received ? "checked" : ""} data-income-received="${item.id}" />
+        Recebida
+      </label>
+      <button class="ghost small" data-remove-income="${item.id}">Remover</button>
+    </article>
+  `;
+}
+
+function renderAccountsSummary() {
+  const root = document.getElementById("accountsSummary");
+  if (!root) return;
+  const summary = calculateAccountsSummary(currentMonth);
+  root.innerHTML = `
+    <article class="account-total ${summary.balance >= 0 ? "positive" : "negative"}">
+      <span>Entradas</span>
+      <strong>${currency.format(summary.incomeTotal)}</strong>
+    </article>
+    <article class="account-total">
+      <span>Contas pagas</span>
+      <strong>${currency.format(summary.paidTotal)}</strong>
+    </article>
+    <article class="account-total warning">
+      <span>Falta pagar</span>
+      <strong>${currency.format(summary.pendingTotal)}</strong>
+    </article>
+    <article class="account-total">
+      <span>Total de contas</span>
+      <strong>${currency.format(summary.billsTotal)}</strong>
+    </article>
+    <article class="account-total ${summary.balance >= 0 ? "positive" : "negative"}">
+      <span>Saldo final</span>
+      <strong>${currency.format(summary.balance)}</strong>
+    </article>
+  `;
+}
+
 function renderProjection() {
   const root = document.getElementById("projectionList");
   root.innerHTML = monthLabels
@@ -670,6 +767,7 @@ function renderProjection() {
           ${line("Juntos", totals.both)}
           ${line("Faturas", totals.exactTotal)}
           ${line("Contas + cartão Gui", calculateBillsTotal(key))}
+          ${line("Saldo do mês", calculateAccountsSummary(key).balance)}
           <p class="muted">${totals.manualCount} gasto(s) pendente(s)</p>
         </article>
       `;
@@ -1212,6 +1310,35 @@ function calculateBillsTotal(monthKey) {
   return ensureMonth(monthKey).bills.reduce((sum, item) => sum + getBillAmount(item, monthKey), 0);
 }
 
+function calculateIncomeTotal(monthKey) {
+  return (ensureMonth(monthKey).incomes ?? []).reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+}
+
+function calculateReceivedIncomeTotal(monthKey) {
+  return (ensureMonth(monthKey).incomes ?? [])
+    .filter((item) => item.received)
+    .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+}
+
+function calculateAccountsSummary(monthKey) {
+  const month = ensureMonth(monthKey);
+  const incomeTotal = calculateIncomeTotal(monthKey);
+  const receivedIncomeTotal = calculateReceivedIncomeTotal(monthKey);
+  const billsTotal = calculateBillsTotal(monthKey);
+  const paidTotal = month.bills.filter((item) => item.paid).reduce((sum, item) => sum + getBillAmount(item, monthKey), 0);
+  const pendingTotal = Math.max(0, billsTotal - paidTotal);
+
+  return {
+    incomeTotal,
+    receivedIncomeTotal,
+    billsTotal,
+    paidTotal,
+    pendingTotal,
+    balance: incomeTotal - billsTotal,
+    cashBalance: receivedIncomeTotal - paidTotal,
+  };
+}
+
 function getBillAmount(item, monthKey) {
   return isCardBill(item) ? calculateMonthTotals(monthKey).guiPayable : Number(item.amount) || 0;
 }
@@ -1315,12 +1442,29 @@ function updateBillFromInput(event) {
   if (isCardBill(item) && field === "amount") return;
   item[field] = field === "amount" ? Number(event.target.value) : event.target.value;
   saveState();
+  renderAccountsSummary();
   renderProjection();
 }
 
 function removeBill(id) {
   const month = ensureMonth(currentMonth);
   month.bills = month.bills.filter((item) => item.id !== id);
+  saveState();
+  render();
+}
+
+function updateIncomeFromInput(event) {
+  const item = findIncome(event.target.dataset.id);
+  const field = event.target.dataset.incomeField;
+  item[field] = field === "amount" ? Number(event.target.value) : event.target.value;
+  saveState();
+  renderAccountsSummary();
+  renderProjection();
+}
+
+function removeIncome(id) {
+  const month = ensureMonth(currentMonth);
+  month.incomes = (month.incomes ?? []).filter((item) => item.id !== id);
   saveState();
   render();
 }
@@ -1337,6 +1481,12 @@ function findBill(id) {
   return item;
 }
 
+function findIncome(id) {
+  const item = (ensureMonth(currentMonth).incomes ?? []).find((incomeItem) => incomeItem.id === id);
+  if (!item) throw new Error("entrada não encontrada");
+  return item;
+}
+
 function ensureMonth(monthKey, targetState = state) {
   if (!targetState.months[monthKey]) {
     const label = monthLabels.find(([key]) => key === monthKey)?.[1] ?? monthKey;
@@ -1344,6 +1494,7 @@ function ensureMonth(monthKey, targetState = state) {
       label,
       income: 0,
       balance: null,
+      incomes: defaultIncomesForMonth(monthKey),
       bills: [],
       transactions: [],
       statementTotals: { Azul: null, Porto: null },

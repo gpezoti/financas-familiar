@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Controle financeiro Gui & Eve</title>
-    <link rel="stylesheet" href="./styles.css?v=20260520-supabase-key" />
+    <link rel="stylesheet" href="./styles.css?v=20260520-accounts-income" />
   </head>
   <body>
     <header class="app-header">
@@ -102,10 +102,17 @@
 
       <section id="billsView" class="view">
         <div class="toolbar">
+          <h2>Entradas do mês</h2>
+          <button id="addIncomeBtn" class="secondary">Adicionar entrada</button>
+        </div>
+        <div id="incomeList" class="income-list"></div>
+
+        <div class="toolbar">
           <h2>Contas do mês</h2>
           <button id="addBillBtn" class="secondary">Adicionar conta</button>
         </div>
         <div id="billList" class="bill-list"></div>
+        <div id="accountsSummary" class="accounts-summary"></div>
       </section>
 
       <section id="projectionView" class="view">
@@ -127,6 +134,6 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="./app.js?v=20260520-supabase-key"></script>
+    <script src="./app.js?v=20260520-accounts-income"></script>
   </body>
 </html>

@@ -154,6 +154,7 @@ input[type="text"] {
 .import-panel,
 .sync-panel,
 .transaction-row,
+.income-row,
 .bill-row,
 .projection-card {
   border: 1px solid var(--line);
@@ -341,6 +342,7 @@ input[type="text"] {
 }
 
 .transaction-list,
+.income-list,
 .bill-list,
 .projection-list {
   display: grid;
@@ -361,6 +363,61 @@ input[type="text"] {
   gap: 10px;
   align-items: center;
   padding: 12px;
+}
+
+.income-row {
+  display: grid;
+  grid-template-columns: 64px 1fr 132px 128px 76px;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+}
+
+.accounts-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.account-total {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.account-total span {
+  display: block;
+  color: var(--muted);
+  font-weight: 750;
+  margin-bottom: 8px;
+}
+
+.account-total strong {
+  display: block;
+  font-size: 1.25rem;
+  line-height: 1.1;
+}
+
+.account-total.positive {
+  border-color: rgba(23, 107, 91, 0.35);
+  background: #f3fbf7;
+}
+
+.account-total.negative,
+.account-total.warning {
+  border-color: rgba(155, 47, 47, 0.35);
+  background: #fff6f3;
+}
+
+.account-total.positive strong {
+  color: var(--accent-strong);
+}
+
+.account-total.negative strong,
+.account-total.warning strong {
+  color: var(--danger);
 }
 
 .bill-row.calculated {
@@ -489,11 +546,13 @@ input[type="text"] {
   }
 
   .transaction-row,
+  .income-row,
   .bill-row {
     grid-template-columns: 1fr 1fr;
   }
 
   .transaction-row > *,
+  .income-row > *,
   .bill-row > * {
     min-width: 0;
   }
@@ -508,9 +567,11 @@ input[type="text"] {
   .summary-grid,
   .card-breakdown,
   .projection-list,
+  .accounts-summary,
   .sync-panel,
   .sync-actions,
   .transaction-row,
+  .income-row,
   .bill-row {
     grid-template-columns: 1fr;
   }
@@ -564,6 +625,7 @@ input[type="text"] {
   }
 
   .transaction-row,
+  .income-row,
   .bill-row,
   .metric,
   .import-panel,
