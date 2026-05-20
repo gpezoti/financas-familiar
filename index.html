@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Controle financeiro Gui & Eve</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Beta financeiro familiar</p>
+        <h1>Cartões, contas e projeções</h1>
+      </div>
+      <div class="header-actions">
+        <label class="select-label">
+          Mês
+          <select id="monthSelect"></select>
+        </label>
+        <button id="saveSnapshotBtn" class="secondary">Salvar agora</button>
+        <button id="resetBtn" class="ghost">Restaurar base</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="summary-grid" aria-label="Resumo do mês">
+        <article class="metric accent">
+          <span>Gui precisa pagar</span>
+          <strong id="guiTotal">R$ 0,00</strong>
+          <small>Inclui 50% dos gastos juntos</small>
+        </article>
+        <article class="metric eve">
+          <span>Eve precisa pagar</span>
+          <strong id="eveTotal">R$ 0,00</strong>
+          <small>Inclui 50% dos gastos juntos</small>
+        </article>
+        <article class="metric together">
+          <span>Gastos juntos</span>
+          <strong id="sharedTotal">R$ 0,00</strong>
+          <small>Mercado e farmácia entram aqui</small>
+        </article>
+        <article class="metric warning">
+          <span>Pendentes de decisão</span>
+          <strong id="manualCount">0</strong>
+          <small>Novos gastos sem dono definido</small>
+        </article>
+      </section>
+
+      <section class="import-panel">
+        <div>
+          <p class="eyebrow">Importação mensal</p>
+          <h2>Suba as duas faturas do mês</h2>
+        </div>
+        <div class="upload-grid">
+          <label class="upload-card">
+            <span>Fatura Azul</span>
+            <input id="azulInput" type="file" accept=".pdf,.csv,.xlsx,.xls" />
+          </label>
+          <label class="upload-card">
+            <span>Fatura Porto</span>
+            <input id="portoInput" type="file" accept=".pdf,.csv,.xlsx,.xls" />
+          </label>
+        </div>
+        <p id="importFeedback" class="feedback">
+          Aceita PDF, CSV e Excel. Parcelas conhecidas serão classificadas automaticamente; compras novas ficam para análise manual.
+        </p>
+      </section>
+
+      <nav class="tabs" aria-label="Visões">
+        <button class="tab active" data-view="cardsView">Faturas</button>
+        <button class="tab" data-view="billsView">Contas</button>
+        <button class="tab" data-view="projectionView">Projeções</button>
+      </nav>
+
+      <section id="cardsView" class="view active">
+        <div id="cardBreakdown" class="card-breakdown"></div>
+        <div class="toolbar">
+          <h2>Lançamentos do cartão</h2>
+          <button id="addTransactionBtn" class="secondary">Adicionar gasto</button>
+        </div>
+        <div class="card-tabs" aria-label="Cartões">
+          <button class="card-tab active" data-card-tab="Azul">Azul</button>
+          <button class="card-tab" data-card-tab="Porto">Porto</button>
+        </div>
+        <div id="transactionList" class="transaction-list"></div>
+      </section>
+
+      <section id="billsView" class="view">
+        <div class="toolbar">
+          <h2>Contas do mês</h2>
+          <button id="addBillBtn" class="secondary">Adicionar conta</button>
+        </div>
+        <div id="billList" class="bill-list"></div>
+      </section>
+
+      <section id="projectionView" class="view">
+        <div class="toolbar">
+          <h2>Próximos meses</h2>
+          <button id="recalculateBtn" class="secondary">Recalcular projeções</button>
+        </div>
+        <div id="projectionList" class="projection-list"></div>
+      </section>
+    </main>
+
+    <template id="emptyStateTemplate">
+      <div class="empty-state">
+        <strong>Nada lançado ainda</strong>
+        <span>Importe uma fatura ou adicione um gasto manualmente.</span>
+      </div>
+    </template>
+
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
