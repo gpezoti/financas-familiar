@@ -925,7 +925,9 @@ function splitPdfLineParts(parts) {
     .forEach((part) => {
       const currentText = current.map((item) => item.text).join(" ");
       const startsCharge = /^\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{1,4})?\b/.test(part.text);
-      const startsSection = /^(comprasparceladas|lancamentos|data|encargos|totaldoslancamentos)/.test(compactNormalizedText(part.text));
+      const startsSection = /^(comprasparceladas|lancamentos|data|encargos|totaldoslancamentos|dolardeconversao|repassedeliof|repasseiof|repasse|totallancamentos)/.test(
+        compactNormalizedText(part.text),
+      );
       const startsNewVisualColumn = current.length && part.x - current[0].x > 160;
       const startsSecondColumn =
         startsNewVisualColumn &&
@@ -1000,10 +1002,14 @@ function normalizePdfChargeLines(lines) {
 function filterCurrentChargeLines(lines) {
   let futureSection = false;
   let inChargesSection = false;
+  let currentChargeCount = 0;
 
   return lines.filter((line) => {
     const text = normalizeText(line);
     const compactText = compactNormalizedText(line);
+    const cleanedLine = stripTrailingPdfNoise(line);
+    const cleanedLooksLikeCharge = looksLikePdfChargeLine(cleanedLine);
+    const parsedCandidate = parsePdfLineToRow(line);
 
     if (
       /comprasparceladasproximasfaturas|proximasparcelas|parcelasfuturas|proximasfaturas|lancamentosfuturos|parcelasavencer|parcelamentosfuturos|comprasfuturas|limitesdecredito|encargoscobrados/.test(
@@ -1011,7 +1017,7 @@ function filterCurrentChargeLines(lines) {
       ) ||
       /parcelas futuras|lancamentos futuros|encargos cobrados/.test(text)
     ) {
-      futureSection = true;
+      futureSection = currentChargeCount > 0;
       return false;
     }
 
@@ -1024,15 +1030,21 @@ function filterCurrentChargeLines(lines) {
     }
 
     if (
-      /resumo|total da fatura|valor total|total a pagar|pagamentos efetuados|pagamentos creditos|limites disponiveis|total nacional|total no exterior|saldo convertido|nosso numero|codigo beneficiario|autenticacao mecanica|o demonstrativo acima/.test(text) ||
-      /totaldafatura|valortotal|totalapagar|pagamentosefetuados|pagamentoscreditos|limitesdisponiveis|totalnacional|totalnoexterior|saldoconvertido|codigobeneficiario/.test(compactText)
+      /resumo|total da fatura|valor total|total a pagar|pagamentos efetuados|pagamentos creditos|limites disponiveis|total nacional|total no exterior|saldo convertido|nosso numero|codigo beneficiario|autenticacao mecanica|o demonstrativo acima|lancamentos atuais|valor do documento|uso do banco|carteira especie/.test(text) ||
+      /totaldafatura|valortotal|totalapagar|pagamentosefetuados|pagamentoscreditos|limitesdisponiveis|totalnacional|totalnoexterior|saldoconvertido|codigobeneficiario|lancamentosatuais|valordodocumento|usodobanco|carteiraespecie/.test(compactText)
     ) {
       return false;
     }
 
+    if (/dolardeconversao|totallancamentosinter/.test(compactText) && !cleanedLooksLikeCharge) return false;
     if (futureSection) return false;
-    if (!inChargesSection) return false;
-    if (!looksLikePdfChargeLine(line)) return false;
+    if (!inChargesSection && !parsedCandidate) return false;
+    if (/repasse.*iof/.test(text) && parsedCandidate) {
+      currentChargeCount += 1;
+      return true;
+    }
+    if (!parsedCandidate) return false;
+    currentChargeCount += 1;
     return true;
   });
 }
@@ -1115,8 +1127,19 @@ function toCents(value) {
   return Math.round((Number(value) || 0) * 100);
 }
 
+function formatMoneyValue(value) {
+  return Number(value || 0).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 function parsePdfLineToRow(line) {
-  let text = stripTrailingPdfNoise(line.replace(/\s+/g, " ").trim());
+  let text = line.replace(/\s+/g, " ").trim();
+  const iofRow = parseIofPdfLine(text);
+  if (iofRow) return iofRow;
+
+  text = stripTrailingPdfNoise(text);
   const firstDateIndex = text.search(/\b\d{1,2}[\/.-]\d{1,2}(?:[\/.-]\d{1,4})?\b/);
   if (firstDateIndex > 0 && findMoneyInText(text.slice(0, firstDateIndex)) === null) text = text.slice(firstDateIndex).trim();
 
@@ -1136,6 +1159,13 @@ function parsePdfLineToRow(line) {
   return [dateMatch[0], description, amountMatch[0]];
 }
 
+function parseIofPdfLine(line) {
+  if (!/repasse.*iof/i.test(normalizeText(line))) return null;
+  const amount = findMoneyInText(line);
+  if (!amount) return null;
+  return ["", "Repasse de IOF", formatMoneyValue(amount)];
+}
+
 function stripTrailingPdfNoise(line) {
   const markers = [
     "lancamentosnocartao",
@@ -1143,6 +1173,8 @@ function stripTrailingPdfNoise(line) {
     "dataprodutosservicosvalor",
     "comprasparceladas",
     "encargoscobrados",
+    "dolardeconversao",
+    "totallancamentosinter",
   ];
   let markerIndex = line.length;
 
