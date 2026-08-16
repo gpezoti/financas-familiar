@@ -9,6 +9,8 @@ const LEGACY_STORAGE_KEYS = [
   "gui-eve-finance-empty-v7",
 ];
 const TOTAL_MATCH_TOLERANCE_CENTS = 1;
+const FINANCED_BALANCE_LABEL = "Saldo financiado (fatura anterior)";
+const PDF_COLUMN_SPLIT_FALLBACK = 330;
 const SUPABASE_URL = "https://wwqylztfvgjauiwxieii.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind3cXlsenRmdmdqYXVpd3hpZWlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODg5NzMsImV4cCI6MjA5NDg2NDk3M30.WhqanwDQUlOihRIGK4ZPp06vHD2mJTCrVbqiZuKkSo8";
@@ -548,7 +550,7 @@ function renderBreakdown() {
       .map((card) => {
         const cardTotals = totals.cards[card] ?? emptyTotals();
         const statementTotal = totals.statementTotals?.[card];
-        const difference = statementTotal ? cardTotals.total - statementTotal : null;
+        const difference = statementTotal ? (toCents(cardTotals.total) - toCents(statementTotal)) / 100 : null;
         return `
           <article class="breakdown-card">
             <h3>${card}</h3>
@@ -795,7 +797,16 @@ async function importStatement(file, card) {
     }
 
     const importedTotal = imported.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    assertInvoiceTotalMatches(importedTotal, importData.statementTotal, "itens importados");
+    const chargesTotal = importData.currentChargesTotal ?? importData.statementTotal;
+    assertInvoiceTotalMatches(importedTotal, chargesTotal, "itens importados");
+
+    const financedBalance = Number(importData.financedBalance || 0);
+    if (financedBalance > 0) {
+      imported.push({
+        ...tx(card, FINANCED_BALANCE_LABEL, financedBalance, "manual", "import", ""),
+        occurrence: 0,
+      });
+    }
 
     const month = ensureMonth(currentMonth);
     month.statementTotals = month.statementTotals ?? { Azul: null, Porto: null };
@@ -821,7 +832,10 @@ async function importStatement(file, card) {
     saveState();
     render();
     const totalMessage = importData.statementTotal
-      ? ` Total da fatura lido: ${currency.format(importData.statementTotal)}. Itens lidos: ${currency.format(importedTotal)}.`
+      ? ` Total da fatura lido: ${currency.format(importData.statementTotal)}. Itens lidos: ${currency.format(importedTotal)}.` +
+        (financedBalance > 0
+          ? ` Saldo financiado da fatura anterior: ${currency.format(financedBalance)} (lançado como item separado).`
+          : "")
       : ` Itens lidos: ${currency.format(importedTotal)}.`;
     setFeedback(
       `${added} lançamento(s) importado(s) da fatura ${card}. ${skipped} duplicado(s) ignorado(s). Total agora: ${before + added}.${totalMessage}`,
@@ -870,50 +884,114 @@ async function readPdfData(file) {
   }
 
   const normalizedLines = normalizePdfChargeLines(lines);
-  const statementTotal = extractStatementTotalFromLines(normalizedLines);
+  const summary = extractStatementSummaryFromLines(normalizedLines);
+  const statementTotal = summary.statementTotal;
   if (statementTotal === null) {
     throw new Error("leitura bloqueada: não encontrei o total oficial da fatura no PDF");
   }
 
+  // A soma dos lançamentos só fecha com o "total desta fatura" quando não há saldo
+  // financiado/rotativo vindo da fatura anterior. Quando a fatura traz o subtotal
+  // "total dos lançamentos atuais", é ele que serve de âncora para a conferência.
+  const currentChargesTotal = summary.currentChargesTotal ?? statementTotal;
+
   const rows = reconcileRowsToStatementTotal(
     filterCurrentChargeLines(normalizedLines).map(parsePdfLineToRow).filter(Boolean),
-    statementTotal,
+    currentChargesTotal,
   );
   if (!rows.length) {
     throw new Error("não encontrei texto de lançamentos no PDF; se for imagem/escaneado, envie CSV ou Excel");
   }
-  assertInvoiceTotalMatches(sumRowsAmount(rows), statementTotal, "PDF");
-  return { rows, statementTotal };
+  assertInvoiceTotalMatches(sumRowsAmount(rows), currentChargesTotal, "PDF");
+  return {
+    rows,
+    statementTotal,
+    currentChargesTotal,
+    financedBalance: summary.financedBalance,
+  };
 }
 
 function groupPdfTextLines(items) {
+  const visibleItems = items.filter((item) => item.str && item.str.trim());
+  const columnSplit = detectPdfColumnSplit(visibleItems);
   const lines = [];
 
-  items
-    .filter((item) => item.str && item.str.trim())
-    .forEach((item) => {
-      const x = item.transform?.[4] ?? 0;
-      const y = item.transform?.[5] ?? 0;
-      let line = lines.find((candidate) => Math.abs(candidate.y - y) <= 6);
+  visibleItems.forEach((item) => {
+    const x = item.transform?.[4] ?? 0;
+    const y = item.transform?.[5] ?? 0;
+    const column = columnSplit === null ? 0 : Number(x >= columnSplit);
+    let line = lines.find((candidate) => candidate.column === column && Math.abs(candidate.y - y) <= 6);
 
-      if (!line) {
-        line = { y, parts: [] };
-        lines.push(line);
-      }
+    if (!line) {
+      line = { column, y, parts: [] };
+      lines.push(line);
+    }
 
-      line.parts.push({ x, text: item.str.trim() });
-    });
+    line.parts.push({ x, text: item.str.trim() });
+  });
 
   return lines
-    .flatMap((line) => splitPdfLineParts(line.parts).map((segment) => ({ ...segment, y: line.y })))
+    .flatMap((line) =>
+      splitPdfLineParts(line.parts).map((segment) => ({
+        ...segment,
+        y: line.y,
+        column: columnSplit === null ? pdfColumnBucket(segment.x) : line.column,
+      })),
+    )
     .sort((a, b) => {
-      const columnDifference = pdfColumnBucket(a.x) - pdfColumnBucket(b.x);
+      const columnDifference = a.column - b.column;
       if (columnDifference) return columnDifference;
       if (Math.abs(b.y - a.y) > 6) return b.y - a.y;
       return a.x - b.x;
     })
     .map((segment) => segment.text)
     .filter(Boolean);
+}
+
+// Páginas de fatura têm duas colunas independentes. Se as duas forem agrupadas na
+// mesma linha, o texto da coluna da direita entra na descrição e, pior, o último
+// valor da linha (que é o da direita) vira o valor do lançamento.
+function detectPdfColumnSplit(items) {
+  if (items.length < 40) return null;
+
+  const spans = items.map((item) => {
+    const x = item.transform?.[4] ?? 0;
+    return [x, x + (item.width || 0)];
+  });
+  const maxX = Math.max(...spans.map(([, end]) => end));
+  if (!Number.isFinite(maxX) || maxX <= 0) return null;
+
+  const occupied = new Array(Math.ceil(maxX) + 2).fill(false);
+  spans.forEach(([start, end]) => {
+    const from = Math.max(0, Math.floor(start));
+    const to = Math.min(occupied.length - 1, Math.ceil(end));
+    for (let pixel = from; pixel <= to; pixel += 1) occupied[pixel] = true;
+  });
+
+  const searchStart = Math.floor(maxX * 0.4);
+  const searchEnd = Math.ceil(maxX * 0.68);
+  let best = null;
+  let gapStart = null;
+
+  for (let pixel = searchStart; pixel <= searchEnd; pixel += 1) {
+    if (!occupied[pixel]) {
+      if (gapStart === null) gapStart = pixel;
+      continue;
+    }
+    if (gapStart !== null && pixel - gapStart >= 8 && (!best || pixel - gapStart > best.size)) {
+      best = { size: pixel - gapStart, center: (gapStart + pixel) / 2 };
+    }
+    gapStart = null;
+  }
+  if (gapStart !== null && searchEnd - gapStart >= 8 && (!best || searchEnd - gapStart > best.size)) {
+    best = { size: searchEnd - gapStart, center: (gapStart + searchEnd) / 2 };
+  }
+  if (!best) return null;
+
+  const leftCount = spans.filter(([start]) => start < best.center).length;
+  const rightCount = spans.length - leftCount;
+  if (leftCount < spans.length * 0.2 || rightCount < spans.length * 0.2) return null;
+  return best.center;
 }
 
 function splitPdfLineParts(parts) {
@@ -958,7 +1036,7 @@ function joinPdfParts(parts) {
 }
 
 function pdfColumnBucket(x) {
-  return x >= 330 ? 1 : 0;
+  return x >= PDF_COLUMN_SPLIT_FALLBACK ? 1 : 0;
 }
 
 function normalizePdfChargeLines(lines) {
@@ -1050,20 +1128,38 @@ function filterCurrentChargeLines(lines) {
 }
 
 function extractStatementTotalFromLines(lines) {
-  const normalizedLines = lines.map((line) => ({ line, text: normalizeText(line) }));
+  return extractStatementSummaryFromLines(lines).statementTotal;
+}
 
-  const strongPatterns = [
-    /total desta fatura/,
-    /o total da sua fatura e/,
-    /o valor da fatura e/,
-    /valor total da fatura/,
-    /total da fatura/,
-    /total a pagar/,
-    /valor a pagar/,
-    /saldo da fatura/,
-  ];
+function extractStatementSummaryFromLines(lines) {
+  // O PDF quebra palavras acentuadas em pedaços ("Lan", "ç", "amentos"), por isso a
+  // busca dos rótulos usa o texto compactado (sem espaços nem acentos).
+  const normalizedLines = lines.map((line) => ({ line, text: compactNormalizedText(line) }));
 
-  for (const pattern of strongPatterns) {
+  return {
+    statementTotal: findLabeledMoneyInLines(normalizedLines, [
+      /totaldestafatura/,
+      /ototaldasuafaturae/,
+      /ovalordafaturae/,
+      /valortotaldafatura/,
+      /totaldafatura(?!anterior)/,
+      /totalapagar/,
+      /valorapagar/,
+      /saldodafatura/,
+    ]),
+    currentChargesTotal: findLabeledMoneyInLines(normalizedLines, [
+      /totaldoslancamentosatuais/,
+      /totaldelancamentosatuais/,
+      /totaldoslancamentosdoperiodo/,
+      /lancamentosatuais/,
+    ]),
+    financedBalance:
+      findLabeledMoneyInLines(normalizedLines, [/saldofinanciado/, /saldorotativo/, /saldodocreditorotativo/]) ?? 0,
+  };
+}
+
+function findLabeledMoneyInLines(normalizedLines, patterns) {
+  for (const pattern of patterns) {
     const index = normalizedLines.findIndex(({ text }) => pattern.test(text));
     if (index < 0) continue;
 
@@ -1191,12 +1287,28 @@ function stripTrailingPdfNoise(line) {
 
 function cleanPdfDescription(line, dateText, amountText) {
   return cleanDescription(
-    line
+    mergeSplitAccents(line)
       .replace(dateText, " ")
       .replace(amountText, " ")
       .replace(/\b(R\$|BRL)\b/gi, " ")
-      .replace(/\b(compra|nacional|internacional|parcela|lan[cç]amento)\b/gi, " "),
+      .replace(/\b(compra|nacional|internacional|lan[cç]amento)\b/gi, " "),
   );
+}
+
+// O pdf.js devolve letras acentuadas como itens separados ("Ita", "ú", "Avisa"),
+// o que gera descrições do tipo "Ita ú Avisa". Aqui as partes voltam a se juntar.
+function mergeSplitAccents(text) {
+  let merged = String(text ?? "");
+  let previous = "";
+  while (merged !== previous) {
+    previous = merged;
+    merged = merged
+      // "Ita ú" -> "Itaú" (o pedaço acentuado cola na palavra anterior)
+      .replace(/([A-Za-zÀ-ÿ]) ([À-ÿ]{1,2})(?=\s|$)/g, "$1$2")
+      // "Itaú rio" -> só cola o resto se a continuação for minúscula ("Ita ú Avisa" mantém o espaço)
+      .replace(/([À-ÿ]) ([a-zà-ÿ])/g, "$1$2");
+  }
+  return merged;
 }
 
 function looksLikePdfChargeLine(line) {
@@ -1272,6 +1384,13 @@ function classifyTransaction(item) {
   const key = installmentRuleKey(item.description);
   const normalized = normalizeText(item.description);
   const existingRule = state.rules.find((rule) => rule.key === key || normalized.includes(rule.key));
+
+  // Linhas de parcelamento/refinanciamento da própria fatura não são consumo de
+  // ninguém: ficam como "manual" para não ratear valores altos automaticamente.
+  if (isStatementLevelEntry(item.description)) {
+    return { ...item, owner: "manual", reviewed: false, status: "manual" };
+  }
+
   const owner = Number(item.amount) < 0 ? "both" : autoOwner(item.description, existingRule?.owner);
 
   return {
@@ -1280,6 +1399,12 @@ function classifyTransaction(item) {
     reviewed: Number(item.amount) < 0 ? false : owner !== "manual",
     status: Number(item.amount) < 0 ? "manual" : owner === "manual" ? "manual" : "auto",
   };
+}
+
+function isStatementLevelEntry(description) {
+  return /credito por parcelament|parcela de ref|iof refinanciamento|saldo financiado|encargos de parcelamento/.test(
+    normalizeText(description),
+  );
 }
 
 function autoOwner(description, fallbackOwner) {
