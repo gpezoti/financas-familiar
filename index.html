@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Controle financeiro Gui & Eve</title>
-    <link rel="stylesheet" href="./styles.css?v=20260816-invoice-parser" />
+    <link rel="stylesheet" href="./styles.css?v=20260819-invoice-parser" />
   </head>
   <body>
     <header class="app-header">
@@ -62,8 +62,11 @@
           </label>
         </div>
         <p id="importFeedback" class="feedback">
-          Aceita PDF, CSV e Excel. Parcelas conhecidas serão classificadas automaticamente; compras novas ficam para análise manual.
+          Aceita PDF, CSV e Excel. A fatura entra no mês do próprio vencimento. Parcelas conhecidas serão classificadas automaticamente; compras novas ficam para análise manual.
         </p>
+        <div class="import-actions">
+          <button id="undoImportBtn" class="ghost">Desfazer importação do mês</button>
+        </div>
       </section>
 
       <section class="sync-panel">
@@ -134,6 +137,6 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="./app.js?v=20260816-invoice-parser"></script>
+    <script src="./app.js?v=20260819-invoice-parser"></script>
   </body>
 </html>

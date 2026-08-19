@@ -10,6 +10,7 @@ const LEGACY_STORAGE_KEYS = [
 ];
 const TOTAL_MATCH_TOLERANCE_CENTS = 1;
 const FINANCED_BALANCE_LABEL = "Saldo financiado (fatura anterior)";
+const ADJUSTMENT_LABEL = "Ajuste da fatura (não detalhado no PDF)";
 const PDF_COLUMN_SPLIT_FALLBACK = 330;
 const SUPABASE_URL = "https://wwqylztfvgjauiwxieii.supabase.co";
 const SUPABASE_ANON_KEY =
@@ -167,6 +168,9 @@ const seedSummaries = {
   },
 };
 
+// Algumas faturas (Porto) listam o pagamento da fatura anterior dentro dos
+// lançamentos e o embutem no total; outras (Itaú) mantêm um bloco separado.
+let importAllowsPayments = false;
 let currentMonth = "2026-05";
 let currentCard = "Azul";
 let state = loadState();
@@ -308,6 +312,8 @@ function wireEvents() {
     importStatement(event.target.files[0], "Porto");
     event.target.value = "";
   });
+
+  document.getElementById("undoImportBtn").addEventListener("click", undoImportForMonth);
 
   document.getElementById("addTransactionBtn").addEventListener("click", () => {
     ensureMonth(currentMonth).transactions.unshift(tx(currentCard, "Novo gasto", 0, "manual", "manual"));
@@ -790,6 +796,7 @@ async function importStatement(file, card) {
   try {
     const importData = await readFileData(file);
     const rows = importData.rows;
+    importAllowsPayments = Boolean(importData.allowPayments);
     const imported = normalizeImportedRows(rows, card);
     if (!imported.length) {
       setFeedback(`Não encontrei lançamentos úteis em ${file.name}. Confira se a fatura tem descrição e valor.`);
@@ -798,7 +805,16 @@ async function importStatement(file, card) {
 
     const importedTotal = imported.reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const chargesTotal = importData.currentChargesTotal ?? importData.statementTotal;
-    assertInvoiceTotalMatches(importedTotal, chargesTotal, "itens importados");
+    const adjustment = resolveStatementAdjustment(importedTotal, chargesTotal);
+    if (adjustment === null) {
+      setFeedback(
+        `Importação de ${file.name} cancelada: a soma dos itens (${currency.format(importedTotal)}) não bate com o total oficial (${currency.format(chargesTotal)}). Nada foi importado.`,
+      );
+      return;
+    }
+    if (adjustment !== 0) {
+      imported.push({ ...tx(card, ADJUSTMENT_LABEL, adjustment, "manual", "import", ""), occurrence: 0 });
+    }
 
     const financedBalance = Number(importData.financedBalance || 0);
     if (financedBalance > 0) {
@@ -808,9 +824,15 @@ async function importStatement(file, card) {
       });
     }
 
-    const month = ensureMonth(currentMonth);
+    const targetMonth = resolveStatementMonth(importData.statementMonth);
+    const month = ensureMonth(targetMonth);
     month.statementTotals = month.statementTotals ?? { Azul: null, Porto: null };
     if (importData.statementTotal) month.statementTotals[card] = importData.statementTotal;
+
+    // A fatura real substitui as parcelas que tinham sido projetadas para este mês;
+    // sem isso cada parcela apareceria duas vezes (a projeção e o lançamento real).
+    const replacedProjections = month.transactions.filter(isProjectionOfCard(card)).length;
+    month.transactions = month.transactions.filter((item) => !isProjectionOfCard(card)(item));
 
     const before = month.transactions.length;
     let skipped = 0;
@@ -828,6 +850,7 @@ async function importStatement(file, card) {
       added += 1;
     });
 
+    currentMonth = targetMonth;
     projectFutureInstallments(state);
     saveState();
     render();
@@ -837,12 +860,85 @@ async function importStatement(file, card) {
           ? ` Saldo financiado da fatura anterior: ${currency.format(financedBalance)} (lançado como item separado).`
           : "")
       : ` Itens lidos: ${currency.format(importedTotal)}.`;
+    const adjustmentMessage = adjustment
+      ? ` A fatura não detalha ${currency.format(Math.abs(adjustment))} dos lançamentos; a diferença entrou como "${ADJUSTMENT_LABEL}".`
+      : "";
+    const projectionMessage = replacedProjections
+      ? ` ${replacedProjections} parcela(s) projetada(s) foram substituídas pelos lançamentos reais.`
+      : "";
     setFeedback(
-      `${added} lançamento(s) importado(s) da fatura ${card}. ${skipped} duplicado(s) ignorado(s). Total agora: ${before + added}.${totalMessage}`,
+      `${added} lançamento(s) importado(s) da fatura ${card} em ${monthLabelFor(targetMonth)}. ${skipped} duplicado(s) ignorado(s). Total agora: ${before + added}.${totalMessage}${adjustmentMessage}${projectionMessage}`,
     );
   } catch (error) {
     setFeedback(`Falha ao importar ${file.name}: ${error.message}`);
   }
+}
+
+// Retorna 0 quando fecha, o valor do ajuste quando o usuário aceita importar com
+// diferença, e null quando ele cancela (nada é importado).
+function resolveStatementAdjustment(importedTotal, chargesTotal) {
+  if (chargesTotal === null || chargesTotal === undefined) return 0;
+
+  const differenceCents = toCents(importedTotal) - toCents(chargesTotal);
+  if (Math.abs(differenceCents) <= TOTAL_MATCH_TOLERANCE_CENTS) return 0;
+
+  const accepted = window.confirm(
+    `A soma dos lançamentos lidos (${currency.format(importedTotal)}) não bate com o total oficial da fatura (${currency.format(
+      chargesTotal,
+    )}).\n\nDiferença: ${currency.format(differenceCents / 100)}.\n\nIsso acontece quando o PDF do banco não detalha todos os lançamentos. Clique OK para importar e registrar a diferença como "${ADJUSTMENT_LABEL}" (o total do cartão fecha com o boleto), ou Cancelar para não importar nada.`,
+  );
+  if (!accepted) return null;
+
+  return -differenceCents / 100;
+}
+
+function isProjectionOfCard(card) {
+  return (item) => item.source === "projection" && item.card === card;
+}
+
+function monthLabelFor(monthKey) {
+  return monthLabels.find(([key]) => key === monthKey)?.[1] ?? monthKey;
+}
+
+// A fatura sempre entra no mês do próprio vencimento, não no mês que estiver
+// selecionado na tela — era isso que fazia a fatura de agosto cair em maio.
+function resolveStatementMonth(statementMonth) {
+  if (!statementMonth) return currentMonth;
+  return monthLabels.some(([key]) => key === statementMonth) ? statementMonth : currentMonth;
+}
+
+function extractStatementMonthFromLines(lines) {
+  for (const line of lines) {
+    if (!/vencimento/.test(compactNormalizedText(line))) continue;
+    const match = String(line).match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\b/);
+    if (!match) continue;
+    return `${match[3]}-${String(Number(match[2])).padStart(2, "0")}`;
+  }
+  return null;
+}
+
+function undoImportForMonth() {
+  const month = ensureMonth(currentMonth);
+  const importedItems = month.transactions.filter((item) => item.source === "import");
+
+  if (!importedItems.length) {
+    setFeedback(`Não há lançamentos importados em ${monthLabelFor(currentMonth)} para desfazer.`);
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Remover ${importedItems.length} lançamento(s) importado(s) de ${monthLabelFor(currentMonth)}? Lançamentos manuais não são afetados.`,
+  );
+  if (!confirmed) return;
+
+  month.transactions = month.transactions.filter((item) => item.source !== "import");
+  month.statementTotals = { Azul: null, Porto: null };
+  projectFutureInstallments(state);
+  saveState();
+  render();
+  setFeedback(
+    `${importedItems.length} lançamento(s) importado(s) removido(s) de ${monthLabelFor(currentMonth)}. Restaram ${month.transactions.length}.`,
+  );
 }
 
 async function readFileData(file) {
@@ -895,19 +991,38 @@ async function readPdfData(file) {
   // "total dos lançamentos atuais", é ele que serve de âncora para a conferência.
   const currentChargesTotal = summary.currentChargesTotal ?? statementTotal;
 
-  const rows = reconcileRowsToStatementTotal(
-    filterCurrentChargeLines(normalizedLines).map(parsePdfLineToRow).filter(Boolean),
-    currentChargesTotal,
+  // Quando a fatura publica o subtotal "total dos lançamentos atuais" (Itaú), esse
+  // subtotal NÃO inclui os pagamentos da fatura anterior, então as linhas de
+  // pagamento ficam de fora. Quando a âncora é o total da fatura (Porto), o total
+  // já vem líquido dos pagamentos e essas linhas precisam entrar.
+  const preferPayments = summary.currentChargesTotal === null;
+
+  importAllowsPayments = true;
+  const chargeLines = filterCurrentChargeLines(normalizedLines);
+
+  const variants = [preferPayments, !preferPayments].map((allowPayments) => {
+    importAllowsPayments = allowPayments;
+    const rows = chargeLines.map(parsePdfLineToRow).filter(Boolean);
+    return { allowPayments, rows, total: sumRowsAmount(rows) };
+  });
+
+  const exact = variants.find(
+    (variant) => Math.abs(toCents(variant.total) - toCents(currentChargesTotal)) <= TOTAL_MATCH_TOLERANCE_CENTS,
   );
-  if (!rows.length) {
+  const chosen = exact ?? variants[0];
+  importAllowsPayments = chosen.allowPayments;
+
+  if (!chosen.rows.length) {
     throw new Error("não encontrei texto de lançamentos no PDF; se for imagem/escaneado, envie CSV ou Excel");
   }
-  assertInvoiceTotalMatches(sumRowsAmount(rows), currentChargesTotal, "PDF");
+
   return {
-    rows,
+    rows: chosen.rows,
+    allowPayments: chosen.allowPayments,
     statementTotal,
     currentChargesTotal,
     financedBalance: summary.financedBalance,
+    statementMonth: extractStatementMonthFromLines(normalizedLines),
   };
 }
 
@@ -1182,42 +1297,11 @@ function extractStatementTotalFromRows(rows) {
   return match ? findMoney(match) : null;
 }
 
-function reconcileRowsToStatementTotal(rows, statementTotal) {
-  if (!statementTotal || !rows.length) return rows;
-
-  const fullTotal = sumRowsAmount(rows);
-  if (Math.abs(fullTotal - statementTotal) <= 0.02) return rows;
-
-  let runningTotal = 0;
-
-  for (let index = 0; index < rows.length; index += 1) {
-    runningTotal += parseMoney(rows[index][2]) || 0;
-    const difference = Math.abs(runningTotal - statementTotal);
-
-    if (difference <= 0.02) {
-      return rows.slice(0, index + 1);
-    }
-  }
-
-  return rows;
-}
 
 function sumRowsAmount(rows) {
   return rows.reduce((sum, row) => sum + (parseMoney(row[2]) || 0), 0);
 }
 
-function assertInvoiceTotalMatches(itemsTotal, statementTotal, sourceLabel) {
-  if (statementTotal === null || statementTotal === undefined) return;
-
-  const differenceCents = toCents(itemsTotal) - toCents(statementTotal);
-  if (Math.abs(differenceCents) <= TOTAL_MATCH_TOLERANCE_CENTS) return;
-
-  throw new Error(
-    `leitura bloqueada: soma dos ${sourceLabel} (${currency.format(itemsTotal)}) não bate com o total oficial da fatura (${currency.format(
-      statementTotal,
-    )}). Diferença: ${currency.format(differenceCents / 100)}. Nada foi importado.`,
-  );
-}
 
 function toCents(value) {
   return Math.round((Number(value) || 0) * 100);
@@ -1243,7 +1327,7 @@ function parsePdfLineToRow(line) {
   const moneyMatches = [...text.matchAll(/(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}|(?:R\$\s*)?-?\d+,\d{2}/g)];
 
   if (!dateMatch || !moneyMatches.length) return null;
-  if (isPaymentOrCreditLine(text)) return null;
+  if (!importAllowsPayments && isPaymentOrCreditLine(text)) return null;
 
   const amountMatch = moneyMatches[moneyMatches.length - 1];
   const amount = parseMoney(amountMatch[0]);
@@ -1375,9 +1459,22 @@ function transactionDedupKey(item) {
 }
 
 function shouldIgnoreImportedDescription(description) {
-  return /total|subtotal|pagamento|pagamentos|valor a pagar|saldo anterior|saldo da fatura|encargos|limite|vencimento|fatura|parcelas futuras|proximas parcelas|próximas parcelas|proximas faturas|próximas faturas|lancamentos futuros|lançamentos futuros|parcelas a vencer/i.test(
-    description,
-  );
+  const text = normalizeText(description);
+  if (!text) return true;
+  if (!importAllowsPayments && /\bpagamentos?\b/.test(text)) return true;
+
+  // Rótulos de resumo começam pela palavra-chave ("Total desta fatura", "Limite
+  // total"); nome de estabelecimento pode conter a palavra no meio
+  // ("CONECTCAR_FATURA") e não deve ser descartado.
+  if (
+    /^(total|subtotal|saldo|valor a pagar|valor total|encargos|limite|limites|vencimento|resumo|demonstrativo|despesas no|proxima fatura|proximas faturas|demais faturas|proximas parcelas|parcelas futuras|parcelas a vencer|lancamentos futuros|credito rotativo)\b/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  return /\b(total (da|desta) fatura|total dos lancamentos|total para proximas faturas|total das despesas)\b/.test(text);
 }
 
 function classifyTransaction(item) {
@@ -1402,8 +1499,10 @@ function classifyTransaction(item) {
 }
 
 function isStatementLevelEntry(description) {
-  return /credito por parcelament|parcela de ref|iof refinanciamento|saldo financiado|encargos de parcelamento/.test(
-    normalizeText(description),
+  const text = normalizeText(description);
+  return (
+    /credito por parcelament|parcela de ref|iof refinanciamento|saldo financiado|encargos de parcelamento/.test(text) ||
+    /^pagamento|devolucao iof|^ajuste da fatura/.test(text)
   );
 }
 

@@ -233,6 +233,12 @@ input[type="text"] {
   min-height: 22px;
 }
 
+.import-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .sync-panel {
   display: grid;
   grid-template-columns: minmax(220px, 0.75fr) 1fr;
