@@ -250,6 +250,7 @@ function loadState() {
   const initial = {
     months,
     rules: [],
+    suppressedProjections: [],
     updatedAt: new Date().toISOString(),
   };
   projectFutureInstallments(initial);
@@ -257,6 +258,9 @@ function loadState() {
 }
 
 function migrateState(nextState) {
+  if (!Array.isArray(nextState.rules)) nextState.rules = [];
+  if (!Array.isArray(nextState.suppressedProjections)) nextState.suppressedProjections = [];
+
   monthLabels.forEach(([key]) => {
     const month = ensureMonth(key, nextState);
     month.statementTotals = month.statementTotals ?? { Azul: null, Porto: null };
@@ -1561,6 +1565,8 @@ function autoOwner(description, fallbackOwner) {
 }
 
 function projectFutureInstallments(nextState) {
+  if (!Array.isArray(nextState.suppressedProjections)) nextState.suppressedProjections = [];
+
   monthLabels.forEach(([key]) => {
     const month = ensureMonth(key, nextState);
     month.transactions = month.transactions.filter((item) => !isProjectedTransaction(item));
@@ -1588,7 +1594,9 @@ function projectFutureInstallments(nextState) {
             reviewed: item.owner !== "manual",
           };
           const exists = hasEquivalentInstallment(nextState.months[futureKey], projected);
-          if (!exists) nextState.months[futureKey].transactions.push(projected);
+          if (!exists && !isProjectionSuppressed(nextState, futureKey, projected)) {
+            nextState.months[futureKey].transactions.push(projected);
+          }
         }
       });
   });
@@ -1612,6 +1620,25 @@ function installmentProjectionKey(item) {
     String(installment.current).padStart(2, "0"),
     String(installment.total).padStart(2, "0"),
   ].join("|");
+}
+
+function projectionSuppressionKey(monthKey, item) {
+  const projectionKey = installmentProjectionKey(item);
+  return projectionKey ? `${monthKey}|${projectionKey}` : "";
+}
+
+function suppressProjection(nextState, monthKey, item) {
+  const key = projectionSuppressionKey(monthKey, item);
+  if (!key) return;
+  nextState.suppressedProjections = nextState.suppressedProjections ?? [];
+  if (!nextState.suppressedProjections.includes(key)) {
+    nextState.suppressedProjections.push(key);
+  }
+}
+
+function isProjectionSuppressed(nextState, monthKey, item) {
+  const key = projectionSuppressionKey(monthKey, item);
+  return key ? (nextState.suppressedProjections ?? []).includes(key) : false;
 }
 
 function projectedBillsFor(monthKey) {
@@ -1748,6 +1775,8 @@ function updateReviewed(id, reviewed) {
 
 function removeTransaction(id) {
   const month = ensureMonth(currentMonth);
+  const removed = month.transactions.find((item) => item.id === id);
+  if (removed) suppressProjection(state, currentMonth, removed);
   month.transactions = month.transactions.filter((item) => item.id !== id);
   projectFutureInstallments(state);
   saveState();
