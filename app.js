@@ -171,7 +171,8 @@ const seedSummaries = {
 // Algumas faturas (Porto) listam o pagamento da fatura anterior dentro dos
 // lançamentos e o embutem no total; outras (Itaú) mantêm um bloco separado.
 let importAllowsPayments = false;
-let currentMonth = "2026-05";
+ensureMonthLabelsThrough(addMonths(calendarMonthKey(new Date()), 6));
+let currentMonth = defaultOpenMonthKey();
 let currentCard = "Azul";
 let state = loadState();
 let supabaseClient = null;
@@ -273,6 +274,7 @@ function migrateState(nextState) {
     }
   });
 
+  projectFutureInstallments(nextState);
   return nextState;
 }
 
@@ -893,17 +895,52 @@ function resolveStatementAdjustment(importedTotal, chargesTotal) {
 }
 
 function isProjectionOfCard(card) {
-  return (item) => item.source === "projection" && item.card === card;
+  return (item) => isProjectedTransaction(item) && item.card === card;
 }
 
 function monthLabelFor(monthKey) {
   return monthLabels.find(([key]) => key === monthKey)?.[1] ?? monthKey;
 }
 
+function defaultOpenMonthKey(date = new Date()) {
+  const todayKey = calendarMonthKey(date);
+  ensureMonthLabelsThrough(addMonths(todayKey, 6));
+
+  if (monthLabels.some(([key]) => key === todayKey)) return todayKey;
+  const sortedKeys = monthLabels.map(([key]) => key).sort();
+  if (todayKey < sortedKeys[0]) return sortedKeys[0];
+  return sortedKeys[sortedKeys.length - 1];
+}
+
+function calendarMonthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function ensureMonthLabelsThrough(limitMonthKey) {
+  const existing = new Set(monthLabels.map(([key]) => key));
+  const sortedKeys = monthLabels.map(([key]) => key).sort();
+  let nextKey = sortedKeys[sortedKeys.length - 1];
+
+  while (nextKey < limitMonthKey) {
+    nextKey = addMonths(nextKey, 1);
+    if (!existing.has(nextKey)) {
+      monthLabels.push([nextKey, formatMonthLabel(nextKey)]);
+      existing.add(nextKey);
+    }
+  }
+}
+
+function formatMonthLabel(monthKey) {
+  const [year, month] = monthKey.split("-").map(Number);
+  const names = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+  return `${names[month - 1]} ${String(year).slice(-2)}`;
+}
+
 // A fatura sempre entra no mês do próprio vencimento, não no mês que estiver
 // selecionado na tela — era isso que fazia a fatura de agosto cair em maio.
 function resolveStatementMonth(statementMonth) {
   if (!statementMonth) return currentMonth;
+  ensureMonthLabelsThrough(statementMonth);
   return monthLabels.some(([key]) => key === statementMonth) ? statementMonth : currentMonth;
 }
 
@@ -1445,7 +1482,12 @@ function normalizeImportedRows(rows, card) {
 
 function hasDuplicateTransaction(month, item) {
   const itemKey = transactionDedupKey(item);
-  return month.transactions.some((existing) => transactionDedupKey(existing) === itemKey);
+  const installmentKey = installmentProjectionKey(item);
+  return month.transactions.some((existing) => {
+    if (transactionDedupKey(existing) === itemKey) return true;
+    if (!installmentKey) return false;
+    return isProjectedTransaction(existing) && installmentProjectionKey(existing) === installmentKey;
+  });
 }
 
 function transactionDedupKey(item) {
@@ -1456,6 +1498,10 @@ function transactionDedupKey(item) {
     Number(item.amount || 0).toFixed(2),
     item.occurrence ?? 0,
   ].join("|");
+}
+
+function isProjectedTransaction(item) {
+  return item?.source === "projection" || item?.status === "projected";
 }
 
 function shouldIgnoreImportedDescription(description) {
@@ -1516,14 +1562,15 @@ function autoOwner(description, fallbackOwner) {
 
 function projectFutureInstallments(nextState) {
   monthLabels.forEach(([key]) => {
-    if (key <= currentMonth) return;
     const month = ensureMonth(key, nextState);
-    month.transactions = month.transactions.filter((item) => item.source !== "projection");
+    month.transactions = month.transactions.filter((item) => !isProjectedTransaction(item));
   });
 
-  Object.entries(nextState.months).forEach(([monthKey, month]) => {
+  Object.entries(nextState.months)
+    .sort(([monthA], [monthB]) => monthA.localeCompare(monthB))
+    .forEach(([monthKey, month]) => {
     month.transactions
-      .filter((item) => item.source !== "projection")
+      .filter((item) => !isProjectedTransaction(item))
       .forEach((item) => {
         const installment = getInstallment(item.description);
         if (!installment || installment.current >= installment.total) return;
@@ -1540,16 +1587,31 @@ function projectFutureInstallments(nextState) {
             status: "projected",
             reviewed: item.owner !== "manual",
           };
-          const exists = nextState.months[futureKey].transactions.some(
-            (existing) =>
-              existing.source === "projection" &&
-              normalizeText(existing.description) === normalizeText(projected.description) &&
-              existing.card === projected.card,
-          );
+          const exists = hasEquivalentInstallment(nextState.months[futureKey], projected);
           if (!exists) nextState.months[futureKey].transactions.push(projected);
         }
       });
   });
+}
+
+function hasEquivalentInstallment(month, projected) {
+  const projectedKey = installmentProjectionKey(projected);
+  if (!projectedKey) return hasDuplicateTransaction(month, projected);
+  return month.transactions.some((existing) => {
+    if (transactionDedupKey(existing) === transactionDedupKey(projected)) return true;
+    return installmentProjectionKey(existing) === projectedKey;
+  });
+}
+
+function installmentProjectionKey(item) {
+  const installment = getInstallment(item?.description);
+  if (!installment) return "";
+  return [
+    item.card,
+    installmentRuleKey(item.description),
+    String(installment.current).padStart(2, "0"),
+    String(installment.total).padStart(2, "0"),
+  ].join("|");
 }
 
 function projectedBillsFor(monthKey) {
